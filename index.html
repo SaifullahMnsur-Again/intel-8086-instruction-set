@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Intel 8086 Instruction Set Workbench</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chosen Palette: Slate & Amber -->
+    <!-- Application Structure Plan: A three-column, dashboard-style layout is used for optimal information hierarchy and user workflow. The left column provides high-level filtering by instruction category. The central column features the main 16x16 interactive opcode grid for visual exploration. The right column contains the "advanced features"—a detailed information panel that dynamically updates, and a powerful two-way "Instruction Builder/Decoder" tool. This structure separates high-level navigation from deep-dive analysis, allowing users to fluidly move from broad exploration to granular instruction construction without losing context. -->
+    <!-- Visualization & Content Choices: The primary visualization is the color-coded opcode grid, which turns the static table into an intuitive heatmap of the 8086 instruction set. Textual information is presented in the details panel upon interaction (click), now including flags and a detailed binary structure breakdown. The key advanced feature is the Builder/Decoder tool, an interactive form. Goal: Allow practical application. Method: Use HTML forms and JS logic to assemble/disassemble hex codes in real-time. This provides a hands-on learning experience that a static document cannot. -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root { --accent-color: #f59e0b; }
+        body { font-family: 'Inter', sans-serif; }
+        .grid-cell { transition: all 0.2s ease-in-out; }
+        .grid-cell:hover:not(.inactive) { transform: scale(1.05); z-index: 10; box-shadow: 0 0 15px rgba(0,0,0,0.3); }
+        .highlight { background-color: var(--accent-color) !important; color: #1e293b !important; }
+        .selected { border: 2px solid var(--accent-color); background-color: #334155 !important; }
+        .inactive { opacity: 0.3; pointer-events: none; }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        .tab-button.active { background-color: #334155; border-bottom-color: var(--accent-color); }
+        .flag { display: inline-block; width: 2.1em; text-align: center; border-radius: 0.25rem; padding: 0.1em 0; margin: 0.1em; font-size: 0.8em; font-weight: bold; }
+        .flag-m { background-color: #ca8a04; color: #fff; } /* Modified */
+        .flag-s { background-color: #16a34a; color: #fff; } /* Set */
+        .flag-c { background-color: #dc2626; color: #fff; } /* Cleared */
+        .flag-u { background-color: #64748b; color: #fff; } /* Undefined */
+        .flag-t { background-color: #4f46e5; color: #fff; } /* Tested */
+        .flag-na { background-color: #374151; color: #9ca3af; } /* Not Affected */
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        'sans': ['Inter', 'sans-serif'],
+                        'mono': ['Roboto Mono', 'monospace'],
+                    },
+                    gridTemplateColumns: {
+                        '16': 'repeat(16, minmax(0, 1fr))',
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-slate-900 text-slate-300 min-h-screen">
+    <div class="container mx-auto p-4 lg:p-6 xl:p-8 max-w-screen-2xl">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl md:text-4xl lg:text-5xl font-bold text-white mb-2">Intel 8086 Instruction Set Workbench</h1>
+            <p class="text-slate-400">A definitive, interactive toolkit for exploring, building, and decoding 8086 machine code.</p>
+        </header>
+
+        <div class="grid grid-cols-1 xl:grid-cols-12 gap-6">
+            <aside class="xl:col-span-2 bg-slate-800 p-4 rounded-lg self-start">
+                <h2 class="text-lg font-semibold text-white mb-4">Categories</h2>
+                <div id="category-filters" class="space-y-2"></div>
+                <input type="text" id="search-box" placeholder="Search mnemonic..." class="mt-6 w-full p-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500">
+            </aside>
+
+            <main class="xl:col-span-6">
+                 <div id="opcode-grid" class="grid grid-cols-16 gap-1 bg-slate-800 p-2 rounded-lg shadow-lg"></div>
+            </main>
+
+            <aside class="xl:col-span-4">
+                <div class="bg-slate-800 rounded-lg shadow-lg sticky top-6">
+                    <div class="flex border-b border-slate-700">
+                        <button id="tab-details" class="tab-button flex-1 p-3 font-semibold text-white border-b-2 border-transparent">Details</button>
+                        <button id="tab-builder" class="tab-button flex-1 p-3 font-semibold text-white border-b-2 border-transparent">Builder / Decoder</button>
+                    </div>
+                    <div id="details-panel" class="p-6 h-[70vh] overflow-y-auto"></div>
+                    <div id="builder-panel" class="p-6 h-[70vh] overflow-y-auto hidden"></div>
+                </div>
+            </aside>
+        </div>
+    </div>
+    
+    <script>
+        // --- DATA ---
+        const ALL_FLAGS = { OF: 'M', DF: '-', IF: '-', TF: '-', SF: 'M', ZF: 'M', AF: 'M', PF: 'M', CF: 'M' };
+        const FLAGS_JUMP = { OF: 'T', DF: '-', IF: '-', TF: '-', SF: 'T', ZF: 'T', AF: '-', PF: 'T', CF: 'T' };
+        const FLAGS_NONE = { OF: '-', DF: '-', IF: '-', TF: '-', SF: '-', ZF: '-', AF: '-', PF: '-', CF: '-' };
+        const FLAGS_LOGIC = { OF: 'C', DF: '-', IF: '-', TF: '-', SF: 'M', ZF: 'M', AF: 'U', PF: 'M', CF: 'C' };
+        const FLAGS_SHIFT = { OF: 'M', DF: '-', IF: '-', TF: '-', SF: 'M', ZF: 'M', AF: 'U', PF: 'M', CF: 'M' };
+        const FLAGS_STRING = { ...FLAGS_NONE, ZF: 'M'};
+        const opcodeData = {
+            '00':{m:'ADD',a:'ADD r/m8, reg8',d:'Add reg8 to r/m8',c:'arithmetic',bs:'000000dw',b:'00000000',f:ALL_FLAGS,modrm:true},
+            '01':{m:'ADD',a:'ADD r/m16, reg16',d:'Add reg16 to r/m16',c:'arithmetic',bs:'000000dw',b:'00000001',f:ALL_FLAGS,modrm:true},
+            '02':{m:'ADD',a:'ADD reg8, r/m8',d:'Add r/m8 to reg8',c:'arithmetic',bs:'000000dw',b:'00000010',f:ALL_FLAGS,modrm:true},
+            '03':{m:'ADD',a:'ADD reg16, r/m16',d:'Add r/m16 to reg16',c:'arithmetic',bs:'000000dw',b:'00000011',f:ALL_FLAGS,modrm:true},
+            '04':{m:'ADD',a:'ADD AL, imm8',d:'Add immediate 8-bit to AL',c:'arithmetic',bs:'0000010w',b:'00000100',f:ALL_FLAGS,op:['imm8']},
+            '05':{m:'ADD',a:'ADD AX, imm16',d:'Add immediate 16-bit to AX',c:'arithmetic',bs:'0000010w',b:'00000101',f:ALL_FLAGS,op:['imm16']},
+            '06':{m:'PUSH',a:'PUSH ES',d:'Push ES onto stack',c:'data',bs:'000seg110',b:'00000110',f:FLAGS_NONE},
+            '07':{m:'POP',a:'POP ES',d:'Pop from stack to ES',c:'data',bs:'000seg111',b:'00000111',f:FLAGS_NONE},
+            '08':{m:'OR',a:'OR r/m8, reg8',d:'Logical OR reg8 with r/m8',c:'logic',bs:'000010dw',b:'00001000',f:FLAGS_LOGIC,modrm:true},
+            '09':{m:'OR',a:'OR r/m16, reg16',d:'Logical OR reg16 with r/m16',c:'logic',bs:'000010dw',b:'00001001',f:FLAGS_LOGIC,modrm:true},
+            '0a':{m:'OR',a:'OR reg8, r/m8',d:'Logical OR r/m8 with reg8',c:'logic',bs:'000010dw',b:'00001010',f:FLAGS_LOGIC,modrm:true},
+            '0b':{m:'OR',a:'OR reg16, r/m16',d:'Logical OR r/m16 with reg16',c:'logic',bs:'000010dw',b:'00001011',f:FLAGS_LOGIC,modrm:true},
+            '0c':{m:'OR',a:'OR AL, imm8',d:'OR immediate 8-bit with AL',c:'logic',bs:'0000110w',b:'00001100',f:FLAGS_LOGIC,op:['imm8']},
+            '0d':{m:'OR',a:'OR AX, imm16',d:'OR immediate 16-bit with AX',c:'logic',bs:'0000110w',b:'00001101',f:FLAGS_LOGIC,op:['imm16']},
+            '0e':{m:'PUSH',a:'PUSH CS',d:'Push CS onto stack',c:'data',bs:'000seg110',b:'00001110',f:FLAGS_NONE},
+            '10':{m:'ADC',a:'ADC r/m8, reg8',d:'Add with Carry reg8 to r/m8',c:'arithmetic',bs:'000100dw',b:'00010000',f:ALL_FLAGS,modrm:true},
+            '11':{m:'ADC',a:'ADC r/m16, reg16',d:'Add with Carry reg16 to r/m16',c:'arithmetic',bs:'000100dw',b:'00010001',f:ALL_FLAGS,modrm:true},
+            '12':{m:'ADC',a:'ADC reg8, r/m8',d:'Add with Carry r/m8 to reg8',c:'arithmetic',bs:'000100dw',b:'00010010',f:ALL_FLAGS,modrm:true},
+            '13':{m:'ADC',a:'ADC reg16, r/m16',d:'Add with Carry r/m16 to reg16',c:'arithmetic',bs:'000100dw',b:'00010011',f:ALL_FLAGS,modrm:true},
+            '14':{m:'ADC',a:'ADC AL, imm8',d:'ADC immediate 8-bit to AL',c:'arithmetic',bs:'0001010w',b:'00010100',f:ALL_FLAGS,op:['imm8']},
+            '15':{m:'ADC',a:'ADC AX, imm16',d:'ADC immediate 16-bit to AX',c:'arithmetic',bs:'0001010w',b:'00010101',f:ALL_FLAGS,op:['imm16']},
+            '16':{m:'PUSH',a:'PUSH SS',d:'Push SS onto stack',c:'data',bs:'000seg110',b:'00010110',f:FLAGS_NONE},
+            '17':{m:'POP',a:'POP SS',d:'Pop from stack to SS',c:'data',bs:'000seg111',b:'00010111',f:FLAGS_NONE},
+            '18':{m:'SBB',a:'SBB r/m8, reg8',d:'Subtract with Borrow reg8 from r/m8',c:'arithmetic',bs:'000110dw',b:'00011000',f:ALL_FLAGS,modrm:true},
+            '19':{m:'SBB',a:'SBB r/m16, reg16',d:'Subtract with Borrow reg16 from r/m16',c:'arithmetic',bs:'000110dw',b:'00011001',f:ALL_FLAGS,modrm:true},
+            '1a':{m:'SBB',a:'SBB reg8, r/m8',d:'Subtract with Borrow r/m8 from reg8',c:'arithmetic',bs:'000110dw',b:'00011010',f:ALL_FLAGS,modrm:true},
+            '1b':{m:'SBB',a:'SBB reg16, r/m16',d:'Subtract with Borrow r/m16 from reg16',c:'arithmetic',bs:'000110dw',b:'00011011',f:ALL_FLAGS,modrm:true},
+            '1c':{m:'SBB',a:'SBB AL, imm8',d:'SBB immediate 8-bit from AL',c:'arithmetic',bs:'0001110w',b:'00011100',f:ALL_FLAGS,op:['imm8']},
+            '1d':{m:'SBB',a:'SBB AX, imm16',d:'SBB immediate 16-bit from AX',c:'arithmetic',bs:'0001110w',b:'00011101',f:ALL_FLAGS,op:['imm16']},
+            '1e':{m:'PUSH',a:'PUSH DS',d:'Push DS onto stack',c:'data',bs:'000seg110',b:'00011110',f:FLAGS_NONE},
+            '1f':{m:'POP',a:'POP DS',d:'Pop from stack to DS',c:'data',bs:'000seg111',b:'00011111',f:FLAGS_NONE},
+            '20':{m:'AND',a:'AND r/m8, reg8',d:'Logical AND reg8 with r/m8',c:'logic',bs:'001000dw',b:'00100000',f:FLAGS_LOGIC,modrm:true},
+            '21':{m:'AND',a:'AND r/m16, reg16',d:'Logical AND reg16 with r/m16',c:'logic',bs:'001000dw',b:'00100001',f:FLAGS_LOGIC,modrm:true},
+            '22':{m:'AND',a:'AND reg8, r/m8',d:'Logical AND r/m8 with reg8',c:'logic',bs:'001000dw',b:'00100010',f:FLAGS_LOGIC,modrm:true},
+            '23':{m:'AND',a:'AND reg16, r/m16',d:'Logical AND r/m16 with reg16',c:'logic',bs:'001000dw',b:'00100011',f:FLAGS_LOGIC,modrm:true},
+            '24':{m:'AND',a:'AND AL, imm8',d:'AND immediate 8-bit with AL',c:'logic',bs:'0010010w',b:'00100100',f:FLAGS_LOGIC,op:['imm8']},
+            '25':{m:'AND',a:'AND AX, imm16',d:'AND immediate 16-bit with AX',c:'logic',bs:'0010010w',b:'00100101',f:FLAGS_LOGIC,op:['imm16']},
+            '26':{m:'ES:',a:'ES:',d:'ES Segment Override Prefix',c:'processor',bs:'00100110',b:'00100110',f:FLAGS_NONE},
+            '27':{m:'DAA',a:'DAA',d:'Decimal Adjust for Addition',c:'arithmetic',bs:'00100111',b:'00100111',f:{OF:'U',DF:'-',IF:'-',TF:'-',SF:'M',ZF:'M',AF:'M',PF:'M',CF:'M'}},
+            '28':{m:'SUB',a:'SUB r/m8, reg8',d:'Subtract reg8 from r/m8',c:'arithmetic',bs:'001010dw',b:'00101000',f:ALL_FLAGS,modrm:true},
+            '29':{m:'SUB',a:'SUB r/m16, reg16',d:'Subtract reg16 from r/m16',c:'arithmetic',bs:'001010dw',b:'00101001',f:ALL_FLAGS,modrm:true},
+            '2a':{m:'SUB',a:'SUB reg8, r/m8',d:'Subtract r/m8 from reg8',c:'arithmetic',bs:'001010dw',b:'00101010',f:ALL_FLAGS,modrm:true},
+            '2b':{m:'SUB',a:'SUB reg16, r/m16',d:'Subtract r/m16 from reg16',c:'arithmetic',bs:'001010dw',b:'00101011',f:ALL_FLAGS,modrm:true},
+            '2c':{m:'SUB',a:'SUB AL, imm8',d:'SUB immediate 8-bit from AL',c:'arithmetic',bs:'0010110w',b:'00101100',f:ALL_FLAGS,op:['imm8']},
+            '2d':{m:'SUB',a:'SUB AX, imm16',d:'SUB immediate 16-bit from AX',c:'arithmetic',bs:'0010110w',b:'00101101',f:ALL_FLAGS,op:['imm16']},
+            '2e':{m:'CS:',a:'CS:',d:'CS Segment Override Prefix',c:'processor',bs:'00101110',b:'00101110',f:FLAGS_NONE},
+            '2f':{m:'DAS',a:'DAS',d:'Decimal Adjust for Subtraction',c:'arithmetic',bs:'00101111',b:'00101111',f:{OF:'U',DF:'-',IF:'-',TF:'-',SF:'M',ZF:'M',AF:'M',PF:'M',CF:'M'}},
+            '30':{m:'XOR',a:'XOR r/m8, reg8',d:'Exclusive OR reg8 with r/m8',c:'logic',bs:'001100dw',b:'00110000',f:FLAGS_LOGIC,modrm:true},
+            '31':{m:'XOR',a:'XOR r/m16, reg16',d:'Exclusive OR reg16 with r/m16',c:'logic',bs:'001100dw',b:'00110001',f:FLAGS_LOGIC,modrm:true},
+            '32':{m:'XOR',a:'XOR reg8, r/m8',d:'Exclusive OR r/m8 with reg8',c:'logic',bs:'001100dw',b:'00110010',f:FLAGS_LOGIC,modrm:true},
+            '33':{m:'XOR',a:'XOR reg16, r/m16',d:'Exclusive OR r/m16 with reg16',c:'logic',bs:'001100dw',b:'00110011',f:FLAGS_LOGIC,modrm:true},
+            '34':{m:'XOR',a:'XOR AL, imm8',d:'XOR immediate 8-bit with AL',c:'logic',bs:'0011010w',b:'00110100',f:FLAGS_LOGIC,op:['imm8']},
+            '35':{m:'XOR',a:'XOR AX, imm16',d:'XOR immediate 16-bit with AX',c:'logic',bs:'0011010w',b:'00110101',f:FLAGS_LOGIC,op:['imm16']},
+            '36':{m:'SS:',a:'SS:',d:'SS Segment Override Prefix',c:'processor',bs:'00110110',b:'00110110',f:FLAGS_NONE},
+            '37':{m:'AAA',a:'AAA',d:'ASCII Adjust for Addition',c:'arithmetic',bs:'00110111',b:'00110111',f:{OF:'U',DF:'-',IF:'-',TF:'-',SF:'U',ZF:'U',AF:'M',PF:'U',CF:'M'}},
+            '38':{m:'CMP',a:'CMP r/m8, reg8',d:'Compare reg8 with r/m8',c:'arithmetic',bs:'001110dw',b:'00111000',f:ALL_FLAGS,modrm:true},
+            '39':{m:'CMP',a:'CMP r/m16, reg16',d:'Compare reg16 with r/m16',c:'arithmetic',bs:'001110dw',b:'00111001',f:ALL_FLAGS,modrm:true},
+            '3a':{m:'CMP',a:'CMP reg8, r/m8',d:'Compare r/m8 with reg8',c:'arithmetic',bs:'001110dw',b:'00111010',f:ALL_FLAGS,modrm:true},
+            '3b':{m:'CMP',a:'CMP reg16, r/m16',d:'Compare r/m16 with reg16',c:'arithmetic',bs:'001110dw',b:'00111011',f:ALL_FLAGS,modrm:true},
+            '3c':{m:'CMP',a:'CMP AL, imm8',d:'CMP immediate 8-bit with AL',c:'arithmetic',bs:'0011110w',b:'00111100',f:ALL_FLAGS,op:['imm8']},
+            '3d':{m:'CMP',a:'CMP AX, imm16',d:'CMP immediate 16-bit with AX',c:'arithmetic',bs:'0011110w',b:'00111101',f:ALL_FLAGS,op:['imm16']},
+            '3e':{m:'DS:',a:'DS:',d:'DS Segment Override Prefix',c:'processor',bs:'00111110',b:'00111110',f:FLAGS_NONE},
+            '3f':{m:'AAS',a:'AAS',d:'ASCII Adjust for Subtraction',c:'arithmetic',bs:'00111111',b:'00111111',f:{OF:'U',DF:'-',IF:'-',TF:'-',SF:'U',ZF:'U',AF:'M',PF:'U',CF:'M'}},
+            '40':{m:'INC',a:'INC AX',d:'Increment AX',c:'arithmetic',bs:'01000reg',b:'01000000',f:{...ALL_FLAGS,CF:'-'}},
+            '41':{m:'INC',a:'INC CX',d:'Increment CX',c:'arithmetic',bs:'01000reg',b:'01000001',f:{...ALL_FLAGS,CF:'-'}},
+            '42':{m:'INC',a:'INC DX',d:'Increment DX',c:'arithmetic',bs:'01000reg',b:'01000010',f:{...ALL_FLAGS,CF:'-'}},
+            '43':{m:'INC',a:'INC BX',d:'Increment BX',c:'arithmetic',bs:'01000reg',b:'01000011',f:{...ALL_FLAGS,CF:'-'}},
+            '44':{m:'INC',a:'INC SP',d:'Increment SP',c:'arithmetic',bs:'01000reg',b:'01000100',f:{...ALL_FLAGS,CF:'-'}},
+            '45':{m:'INC',a:'INC BP',d:'Increment BP',c:'arithmetic',bs:'01000reg',b:'01000101',f:{...ALL_FLAGS,CF:'-'}},
+            '46':{m:'INC',a:'INC SI',d:'Increment SI',c:'arithmetic',bs:'01000reg',b:'01000110',f:{...ALL_FLAGS,CF:'-'}},
+            '47':{m:'INC',a:'INC DI',d:'Increment DI',c:'arithmetic',bs:'01000reg',b:'01000111',f:{...ALL_FLAGS,CF:'-'}},
+            '48':{m:'DEC',a:'DEC AX',d:'Decrement AX',c:'arithmetic',bs:'01001reg',b:'01001000',f:{...ALL_FLAGS,CF:'-'}},
+            '49':{m:'DEC',a:'DEC CX',d:'Decrement CX',c:'arithmetic',bs:'01001reg',b:'01001001',f:{...ALL_FLAGS,CF:'-'}},
+            '4a':{m:'DEC',a:'DEC DX',d:'Decrement DX',c:'arithmetic',bs:'01001reg',b:'01001010',f:{...ALL_FLAGS,CF:'-'}},
+            '4b':{m:'DEC',a:'DEC BX',d:'Decrement BX',c:'arithmetic',bs:'01001reg',b:'01001011',f:{...ALL_FLAGS,CF:'-'}},
+            '4c':{m:'DEC',a:'DEC SP',d:'Decrement SP',c:'arithmetic',bs:'01001reg',b:'01001100',f:{...ALL_FLAGS,CF:'-'}},
+            '4d':{m:'DEC',a:'DEC BP',d:'Decrement BP',c:'arithmetic',bs:'01001reg',b:'01001101',f:{...ALL_FLAGS,CF:'-'}},
+            '4e':{m:'DEC',a:'DEC SI',d:'Decrement SI',c:'arithmetic',bs:'01001reg',b:'01001110',f:{...ALL_FLAGS,CF:'-'}},
+            '4f':{m:'DEC',a:'DEC DI',d:'Decrement DI',c:'arithmetic',bs:'01001reg',b:'01001111',f:{...ALL_FLAGS,CF:'-'}},
+            '50':{m:'PUSH',a:'PUSH AX',d:'Push AX',c:'data',bs:'01010reg',b:'01010000',f:FLAGS_NONE},
+            '51':{m:'PUSH',a:'PUSH CX',d:'Push CX',c:'data',bs:'01010reg',b:'01010001',f:FLAGS_NONE},
+            '52':{m:'PUSH',a:'PUSH DX',d:'Push DX',c:'data',bs:'01010reg',b:'01010010',f:FLAGS_NONE},
+            '53':{m:'PUSH',a:'PUSH BX',d:'Push BX',c:'data',bs:'01010reg',b:'01010011',f:FLAGS_NONE},
+            '54':{m:'PUSH',a:'PUSH SP',d:'Push SP',c:'data',bs:'01010reg',b:'01010100',f:FLAGS_NONE},
+            '55':{m:'PUSH',a:'PUSH BP',d:'Push BP',c:'data',bs:'01010reg',b:'01010101',f:FLAGS_NONE},
+            '56':{m:'PUSH',a:'PUSH SI',d:'Push SI',c:'data',bs:'01010reg',b:'01010110',f:FLAGS_NONE},
+            '57':{m:'PUSH',a:'PUSH DI',d:'Push DI',c:'data',bs:'01010reg',b:'01010111',f:FLAGS_NONE},
+            '58':{m:'POP',a:'POP AX',d:'Pop to AX',c:'data',bs:'01011reg',b:'01011000',f:FLAGS_NONE},
+            '59':{m:'POP',a:'POP CX',d:'Pop to CX',c:'data',bs:'01011reg',b:'01011001',f:FLAGS_NONE},
+            '5a':{m:'POP',a:'POP DX',d:'Pop to DX',c:'data',bs:'01011reg',b:'01011010',f:FLAGS_NONE},
+            '5b':{m:'POP',a:'POP BX',d:'Pop to BX',c:'data',bs:'01011reg',b:'01011011',f:FLAGS_NONE},
+            '5c':{m:'POP',a:'POP SP',d:'Pop to SP',c:'data',bs:'01011reg',b:'01011100',f:FLAGS_NONE},
+            '5d':{m:'POP',a:'POP BP',d:'Pop to BP',c:'data',bs:'01011reg',b:'01011101',f:FLAGS_NONE},
+            '5e':{m:'POP',a:'POP SI',d:'Pop to SI',c:'data',bs:'01011reg',b:'01011110',f:FLAGS_NONE},
+            '5f':{m:'POP',a:'POP DI',d:'Pop to DI',c:'data',bs:'01011reg',b:'01011111',f:FLAGS_NONE},
+            '70':{m:'JO',a:'JO disp8',d:'Jump short if Overflow (OF=1)',c:'control',bs:'01110000',b:'01110000',f:FLAGS_JUMP,op:['disp8']},
+            '71':{m:'JNO',a:'JNO disp8',d:'Jump short if Not Overflow (OF=0)',c:'control',bs:'01110001',b:'01110001',f:FLAGS_JUMP,op:['disp8']},
+            '72':{m:'JB',a:'JB disp8',d:'Jump short if Below (CF=1)',c:'control',bs:'01110010',b:'01110010',f:FLAGS_JUMP,op:['disp8']},
+            '73':{m:'JNB',a:'JNB disp8',d:'Jump short if Not Below (CF=0)',c:'control',bs:'01110011',b:'01110011',f:FLAGS_JUMP,op:['disp8']},
+            '74':{m:'JZ',a:'JZ disp8',d:'Jump short if Zero (ZF=1)',c:'control',bs:'01110100',b:'01110100',f:FLAGS_JUMP,op:['disp8']},
+            '75':{m:'JNZ',a:'JNZ disp8',d:'Jump short if Not Zero (ZF=0)',c:'control',bs:'01110101',b:'01110101',f:FLAGS_JUMP,op:['disp8']},
+            '76':{m:'JBE',a:'JBE disp8',d:'Jump short if Below or Equal (CF=1 or ZF=1)',c:'control',bs:'01110110',b:'01110110',f:FLAGS_JUMP,op:['disp8']},
+            '77':{m:'JA',a:'JA disp8',d:'Jump short if Above (CF=0 and ZF=0)',c:'control',bs:'01110111',b:'01110111',f:FLAGS_JUMP,op:['disp8']},
+            '78':{m:'JS',a:'JS disp8',d:'Jump short if Sign (SF=1)',c:'control',bs:'01111000',b:'01111000',f:FLAGS_JUMP,op:['disp8']},
+            '79':{m:'JNS',a:'JNS disp8',d:'Jump short if Not Sign (SF=0)',c:'control',bs:'01111001',b:'01111001',f:FLAGS_JUMP,op:['disp8']},
+            '7a':{m:'JP',a:'JP disp8',d:'Jump short if Parity (PF=1)',c:'control',bs:'01111010',b:'01111010',f:FLAGS_JUMP,op:['disp8']},
+            '7b':{m:'JNP',a:'JNP disp8',d:'Jump short if Not Parity (PF=0)',c:'control',bs:'01111011',b:'01111011',f:FLAGS_JUMP,op:['disp8']},
+            '7c':{m:'JL',a:'JL disp8',d:'Jump short if Less (SF!=OF)',c:'control',bs:'01111100',b:'01111100',f:FLAGS_JUMP,op:['disp8']},
+            '7d':{m:'JGE',a:'JGE disp8',d:'Jump short if Greater or Equal (SF=OF)',c:'control',bs:'01111101',b:'01111101',f:FLAGS_JUMP,op:['disp8']},
+            '7e':{m:'JLE',a:'JLE disp8',d:'Jump short if Less or Equal (ZF=1 or SF!=OF)',c:'control',bs:'01111110',b:'01111110',f:FLAGS_JUMP,op:['disp8']},
+            '7f':{m:'JG',a:'JG disp8',d:'Jump short if Greater (ZF=0 and SF=OF)',c:'control',bs:'01111111',b:'01111111',f:FLAGS_JUMP,op:['disp8']},
+            '80':{m:'GRP1',a:'GRP1 r/m8, imm8',d:'Immediate Arithmetic/Logic',c:'arithmetic',bs:'100000sw',b:'10000000',f:ALL_FLAGS,g:'grp1',modrm:true,op:['imm8']},
+            '81':{m:'GRP1',a:'GRP1 r/m16, imm16',d:'Immediate Arithmetic/Logic',c:'arithmetic',bs:'100000sw',b:'10000001',f:ALL_FLAGS,g:'grp1',modrm:true,op:['imm16']},
+            '82':{m:'GRP1',a:'GRP1 r/m8, imm8',d:'Immediate Arithmetic/Logic',c:'arithmetic',bs:'100000sw',b:'10000010',f:ALL_FLAGS,g:'grp1',modrm:true,op:['imm8']},
+            '83':{m:'GRP1',a:'GRP1 r/m16, imm8',d:'Immediate Arithmetic/Logic (sign ext)',c:'arithmetic',bs:'100000sw',b:'10000011',f:ALL_FLAGS,g:'grp1',modrm:true,op:['imm8']},
+            '84':{m:'TEST',a:'TEST r/m8, reg8',d:'Logical Compare (AND) r/m8 with reg8',c:'logic',bs:'1000010w',b:'10000100',f:FLAGS_LOGIC,modrm:true},
+            '85':{m:'TEST',a:'TEST r/m16, reg16',d:'Logical Compare (AND) r/m16 with reg16',c:'logic',bs:'1000010w',b:'10000101',f:FLAGS_LOGIC,modrm:true},
+            '86':{m:'XCHG',a:'XCHG r/m8, reg8',d:'Exchange byte between r/m and register',c:'data',bs:'1000011w',b:'10000110',f:FLAGS_NONE,modrm:true},
+            '87':{m:'XCHG',a:'XCHG r/m16, reg16',d:'Exchange word between r/m and register',c:'data',bs:'1000011w',b:'10000111',f:FLAGS_NONE,modrm:true},
+            '88':{m:'MOV',a:'MOV r/m8, reg8',d:'Move reg8 to r/m8',c:'data',bs:'100010dw',b:'10001000',f:FLAGS_NONE,modrm:true},
+            '89':{m:'MOV',a:'MOV r/m16, reg16',d:'Move reg16 to r/m16',c:'data',bs:'100010dw',b:'10001001',f:FLAGS_NONE,modrm:true},
+            '8a':{m:'MOV',a:'MOV reg8, r/m8',d:'Move r/m8 to reg8',c:'data',bs:'100010dw',b:'10001010',f:FLAGS_NONE,modrm:true},
+            '8b':{m:'MOV',a:'MOV reg16, r/m16',d:'Move r/m16 to reg16',c:'data',bs:'100010dw',b:'10001011',f:FLAGS_NONE,modrm:true},
+            '8c':{m:'MOV',a:'MOV r/m16, sreg',d:'Move segment register to r/m16',c:'data',bs:'10001100',b:'10001100',f:FLAGS_NONE,modrm:true},
+            '8d':{m:'LEA',a:'LEA reg16, mem',d:'Load Effective Address',c:'data',bs:'10001101',b:'10001101',f:FLAGS_NONE,modrm:true},
+            '8e':{m:'MOV',a:'MOV sreg, r/m16',d:'Move r/m16 to segment register',c:'data',bs:'10001110',b:'10001110',f:FLAGS_NONE,modrm:true},
+            '8f':{m:'POP',a:'POP r/m16',d:'Pop from stack to r/m16',c:'data',bs:'10001111',b:'10001111',f:FLAGS_NONE,modrm:true, g:'grp1a'},
+            '90':{m:'NOP',a:'NOP',d:'No Operation',c:'processor',bs:'10010000',b:'10010000',f:FLAGS_NONE},
+            '91':{m:'XCHG',a:'XCHG CX, AX',d:'Exchange CX with AX',c:'data',bs:'10010reg',b:'10010001',f:FLAGS_NONE},
+            '92':{m:'XCHG',a:'XCHG DX, AX',d:'Exchange DX with AX',c:'data',bs:'10010reg',b:'10010010',f:FLAGS_NONE},
+            '93':{m:'XCHG',a:'XCHG BX, AX',d:'Exchange BX with AX',c:'data',bs:'10010reg',b:'10010011',f:FLAGS_NONE},
+            '94':{m:'XCHG',a:'XCHG SP, AX',d:'Exchange SP with AX',c:'data',bs:'10010reg',b:'10010100',f:FLAGS_NONE},
+            '95':{m:'XCHG',a:'XCHG BP, AX',d:'Exchange BP with AX',c:'data',bs:'10010reg',b:'10010101',f:FLAGS_NONE},
+            '96':{m:'XCHG',a:'XCHG SI, AX',d:'Exchange SI with AX',c:'data',bs:'10010reg',b:'10010110',f:FLAGS_NONE},
+            '97':{m:'XCHG',a:'XCHG DI, AX',d:'Exchange DI with AX',c:'data',bs:'10010reg',b:'10010111',f:FLAGS_NONE},
+            '98':{m:'CBW',a:'CBW',d:'Convert Byte to Word (AL to AX)',c:'arithmetic',bs:'10011000',b:'10011000',f:FLAGS_NONE},
+            '99':{m:'CWD',a:'CWD',d:'Convert Word to Double Word (AX to DX:AX)',c:'arithmetic',bs:'10011001',b:'10011001',f:FLAGS_NONE},
+            '9a':{m:'CALL',a:'CALL seg:off',d:'Call Far (Direct)',c:'control',bs:'10011010',b:'10011010',f:FLAGS_NONE,op:['offset16','segment16']},
+            '9b':{m:'WAIT',a:'WAIT',d:'Wait for TEST pin active',c:'processor',bs:'10011011',b:'10011011',f:FLAGS_NONE},
+            '9c':{m:'PUSHF',a:'PUSHF',d:'Push Flags',c:'processor',bs:'10011100',b:'10011100',f:FLAGS_NONE},
+            '9d':{m:'POPF',a:'POPF',d:'Pop Flags',c:'processor',bs:'10011101',b:'10011101',f:{OF:'M',DF:'M',IF:'M',TF:'M',SF:'M',ZF:'M',AF:'M',PF:'M',CF:'M'}},
+            '9e':{m:'SAHF',a:'SAHF',d:'Store AH into Flags',c:'processor',bs:'10011110',b:'10011110',f:{SF:'M',ZF:'M',AF:'M',PF:'M',CF:'M',OF:'-',DF:'-',IF:'-',TF:'-'}},
+            '9f':{m:'LAHF',a:'LAHF',d:'Load AH from Flags',c:'processor',bs:'10011111',b:'10011111',f:FLAGS_NONE},
+            'a0':{m:'MOV',a:'MOV AL, [addr]',d:'Move byte from memory to AL',c:'data',bs:'1010000w',b:'10100000',f:FLAGS_NONE,op:['addr16']},
+            'a1':{m:'MOV',a:'MOV AX, [addr]',d:'Move word from memory to AX',c:'data',bs:'1010000w',b:'10100001',f:FLAGS_NONE,op:['addr16']},
+            'a2':{m:'MOV',a:'MOV [addr], AL',d:'Move AL to memory byte',c:'data',bs:'1010001w',b:'10100010',f:FLAGS_NONE,op:['addr16']},
+            'a3':{m:'MOV',a:'MOV [addr], AX',d:'Move AX to memory word',c:'data',bs:'1010001w',b:'10100011',f:FLAGS_NONE,op:['addr16']},
+            'a4':{m:'MOVSB',a:'MOVSB',d:'Move String Byte',c:'string',bs:'1010010w',b:'10100100',f:FLAGS_NONE},
+            'a5':{m:'MOVSW',a:'MOVSW',d:'Move String Word',c:'string',bs:'1010010w',b:'10100101',f:FLAGS_NONE},
+            'a6':{m:'CMPSB',a:'CMPSB',d:'Compare String Byte',c:'string',bs:'1010011w',b:'10100110',f:ALL_FLAGS},
+            'a7':{m:'CMPSW',a:'CMPSW',d:'Compare String Word',c:'string',bs:'1010011w',b:'10100111',f:ALL_FLAGS},
+            'a8':{m:'TEST',a:'TEST AL, imm8',d:'Test immediate 8-bit with AL',c:'logic',bs:'1010100w',b:'10101000',f:FLAGS_LOGIC,op:['imm8']},
+            'a9':{m:'TEST',a:'TEST AX, imm16',d:'Test immediate 16-bit with AX',c:'logic',bs:'1010100w',b:'10101001',f:FLAGS_LOGIC,op:['imm16']},
+            'aa':{m:'STOSB',a:'STOSB',d:'Store String Byte (AL)',c:'string',bs:'1010101w',b:'10101010',f:FLAGS_NONE},
+            'ab':{m:'STOSW',a:'STOSW',d:'Store String Word (AX)',c:'string',bs:'1010101w',b:'10101011',f:FLAGS_NONE},
+            'ac':{m:'LODSB',a:'LODSB',d:'Load String Byte (to AL)',c:'string',bs:'1010110w',b:'10101100',f:FLAGS_NONE},
+            'ad':{m:'LODSW',a:'LODSW',d:'Load String Word (to AX)',c:'string',bs:'1010110w',b:'10101101',f:FLAGS_NONE},
+            'ae':{m:'SCASB',a:'SCASB',d:'Scan String Byte (compare AL)',c:'string',bs:'1010111w',b:'10101110',f:ALL_FLAGS},
+            'af':{m:'SCASW',a:'SCASW',d:'Scan String Word (compare AX)',c:'string',bs:'1010111w',b:'10101111',f:ALL_FLAGS},
+            'b0':{m:'MOV',a:'MOV AL, imm8',d:'Move immediate 8-bit to AL',c:'data',bs:'1011wreg',b:'10110000',f:FLAGS_NONE,op:['imm8']},
+            'b1':{m:'MOV',a:'MOV CL, imm8',d:'Move immediate 8-bit to CL',c:'data',bs:'1011wreg',b:'10110001',f:FLAGS_NONE,op:['imm8']},
+            'b2':{m:'MOV',a:'MOV DL, imm8',d:'Move immediate 8-bit to DL',c:'data',bs:'1011wreg',b:'10110010',f:FLAGS_NONE,op:['imm8']},
+            'b3':{m:'MOV',a:'MOV BL, imm8',d:'Move immediate 8-bit to BL',c:'data',bs:'1011wreg',b:'10110011',f:FLAGS_NONE,op:['imm8']},
+            'b4':{m:'MOV',a:'MOV AH, imm8',d:'Move immediate 8-bit to AH',c:'data',bs:'1011wreg',b:'10110100',f:FLAGS_NONE,op:['imm8']},
+            'b5':{m:'MOV',a:'MOV CH, imm8',d:'Move immediate 8-bit to CH',c:'data',bs:'1011wreg',b:'10110101',f:FLAGS_NONE,op:['imm8']},
+            'b6':{m:'MOV',a:'MOV DH, imm8',d:'Move immediate 8-bit to DH',c:'data',bs:'1011wreg',b:'10110110',f:FLAGS_NONE,op:['imm8']},
+            'b7':{m:'MOV',a:'MOV BH, imm8',d:'Move immediate 8-bit to BH',c:'data',bs:'1011wreg',b:'10110111',f:FLAGS_NONE,op:['imm8']},
+            'b8':{m:'MOV',a:'MOV AX, imm16',d:'Move immediate 16-bit to AX',c:'data',bs:'1011wreg',b:'10111000',f:FLAGS_NONE,op:['imm16']},
+            'b9':{m:'MOV',a:'MOV CX, imm16',d:'Move immediate 16-bit to CX',c:'data',bs:'1011wreg',b:'10111001',f:FLAGS_NONE,op:['imm16']},
+            'ba':{m:'MOV',a:'MOV DX, imm16',d:'Move immediate 16-bit to DX',c:'data',bs:'1011wreg',b:'10111010',f:FLAGS_NONE,op:['imm16']},
+            'bb':{m:'MOV',a:'MOV BX, imm16',d:'Move immediate 16-bit to BX',c:'data',bs:'1011wreg',b:'10111011',f:FLAGS_NONE,op:['imm16']},
+            'bc':{m:'MOV',a:'MOV SP, imm16',d:'Move immediate 16-bit to SP',c:'data',bs:'1011wreg',b:'10111100',f:FLAGS_NONE,op:['imm16']},
+            'bd':{m:'MOV',a:'MOV BP, imm16',d:'Move immediate 16-bit to BP',c:'data',bs:'1011wreg',b:'10111101',f:FLAGS_NONE,op:['imm16']},
+            'be':{m:'MOV',a:'MOV SI, imm16',d:'Move immediate 16-bit to SI',c:'data',bs:'1011wreg',b:'10111110',f:FLAGS_NONE,op:['imm16']},
+            'bf':{m:'MOV',a:'MOV DI, imm16',d:'Move immediate 16-bit to DI',c:'data',bs:'1011wreg',b:'10111111',f:FLAGS_NONE,op:['imm16']},
+            'c2':{m:'RET',a:'RET imm16',d:'Return Near and pop bytes',c:'control',bs:'11000010',b:'11000010',f:FLAGS_NONE,op:['imm16']},
+            'c3':{m:'RET',a:'RET',d:'Return Near',c:'control',bs:'11000011',b:'11000011',f:FLAGS_NONE},
+            'c4':{m:'LES',a:'LES reg16, mem32',d:'Load ES with pointer from memory',c:'data',bs:'11000100',b:'11000100',f:FLAGS_NONE,modrm:true},
+            'c5':{m:'LDS',a:'LDS reg16, mem32',d:'Load DS with pointer from memory',c:'data',bs:'11000101',b:'11000101',f:FLAGS_NONE,modrm:true},
+            'c6':{m:'MOV',a:'MOV r/m8, imm8',d:'Move immediate 8-bit to r/m8',c:'data',bs:'11000110',b:'11000110',f:FLAGS_NONE,g:'grp_mov_imm',modrm:true,op:['imm8']},
+            'c7':{m:'MOV',a:'MOV r/m16, imm16',d:'Move immediate 16-bit to r/m16',c:'data',bs:'11000111',b:'11000111',f:FLAGS_NONE,g:'grp_mov_imm',modrm:true,op:['imm16']},
+            'ca':{m:'RETF',a:'RETF imm16',d:'Return Far and pop bytes',c:'control',bs:'11001010',b:'11001010',f:FLAGS_NONE,op:['imm16']},
+            'cb':{m:'RETF',a:'RETF',d:'Return Far',c:'control',bs:'11001011',b:'11001011',f:FLAGS_NONE},
+            'cc':{m:'INT 3',a:'INT 3',d:'Interrupt 3',c:'control',bs:'11001100',b:'11001100',f:{...FLAGS_NONE,TF:'C',IF:'C'}},
+            'cd':{m:'INT',a:'INT imm8',d:'Interrupt',c:'control',bs:'11001101',b:'11001101',f:{...FLAGS_NONE,TF:'C',IF:'C'},op:['imm8']},
+            'ce':{m:'INTO',a:'INTO',d:'Interrupt on Overflow',c:'control',bs:'11001110',b:'11001110',f:{...FLAGS_NONE,TF:'C',IF:'C'}},
+            'cf':{m:'IRET',a:'IRET',d:'Interrupt Return',c:'control',bs:'11001111',b:'11001111',f:{OF:'M',DF:'M',IF:'M',TF:'M',SF:'M',ZF:'M',AF:'M',PF:'M',CF:'M'}},
+            'd0':{m:'GRP2',a:'GRP2 r/m8, 1',d:'Shift/Rotate by 1',c:'logic',bs:'110100vw',b:'11010000',f:FLAGS_SHIFT,modrm:true,g:'grp2'},
+            'd1':{m:'GRP2',a:'GRP2 r/m16, 1',d:'Shift/Rotate by 1',c:'logic',bs:'110100vw',b:'11010001',f:FLAGS_SHIFT,modrm:true,g:'grp2'},
+            'd2':{m:'GRP2',a:'GRP2 r/m8, CL',d:'Shift/Rotate by CL',c:'logic',bs:'110100vw',b:'11010010',f:FLAGS_SHIFT,modrm:true,g:'grp2'},
+            'd3':{m:'GRP2',a:'GRP2 r/m16, CL',d:'Shift/Rotate by CL',c:'logic',bs:'110100vw',b:'11010011',f:FLAGS_SHIFT,modrm:true,g:'grp2'},
+            'd4':{m:'AAM',a:'AAM',d:'ASCII Adjust for Multiply',c:'arithmetic',bs:'11010100',b:'11010100',f:{...FLAGS_NONE,SF:'M',ZF:'M',PF:'M',OF:'U',AF:'U',CF:'U'}},
+            'd5':{m:'AAD',a:'AAD',d:'ASCII Adjust for Division',c:'arithmetic',bs:'11010101',b:'11010101',f:{...FLAGS_NONE,SF:'M',ZF:'M',PF:'M',OF:'U',AF:'U',CF:'U'}},
+            'd7':{m:'XLAT',a:'XLAT',d:'Translate Byte (from [BX+AL])',c:'data',bs:'11010111',b:'11010111',f:FLAGS_NONE},
+            'e0':{m:'LOOPNZ',a:'LOOPNZ disp8',d:'Loop While Not Zero',c:'control',bs:'11100000',b:'11100000',f:FLAGS_NONE,op:['disp8']},
+            'e1':{m:'LOOPZ',a:'LOOPZ disp8',d:'Loop While Zero',c:'control',bs:'11100001',b:'11100001',f:FLAGS_NONE,op:['disp8']},
+            'e2':{m:'LOOP',a:'LOOP disp8',d:'Loop',c:'control',bs:'11100010',b:'11100010',f:FLAGS_NONE,op:['disp8']},
+            'e3':{m:'JCXZ',a:'JCXZ disp8',d:'Jump if CX is Zero',c:'control',bs:'11100011',b:'11100011',f:FLAGS_NONE,op:['disp8']},
+            'e4':{m:'IN',a:'IN AL, imm8',d:'Input byte from port',c:'data',bs:'1110010w',b:'11100100',f:FLAGS_NONE,op:['imm8']},
+            'e5':{m:'IN',a:'IN AX, imm8',d:'Input word from port',c:'data',bs:'1110010w',b:'11100101',f:FLAGS_NONE,op:['imm8']},
+            'e6':{m:'OUT',a:'OUT imm8, AL',d:'Output byte to port',c:'data',bs:'1110011w',b:'11100110',f:FLAGS_NONE,op:['imm8']},
+            'e7':{m:'OUT',a:'OUT imm8, AX',d:'Output word to port',c:'data',bs:'1110011w',b:'11100111',f:FLAGS_NONE,op:['imm8']},
+            'e8':{m:'CALL',a:'CALL disp16',d:'Call Near (Relative)',c:'control',bs:'11101000',b:'11101000',f:FLAGS_NONE,op:['disp16']},
+            'e9':{m:'JMP',a:'JMP disp16',d:'Jump Near (Relative)',c:'control',bs:'11101001',b:'11101001',f:FLAGS_NONE,op:['disp16']},
+            'ea':{m:'JMP',a:'JMP seg:off',d:'Jump Far (Direct)',c:'control',bs:'11101010',b:'11101010',f:FLAGS_NONE,op:['offset16','segment16']},
+            'eb':{m:'JMP',a:'JMP disp8',d:'Jump Short (Relative)',c:'control',bs:'11101011',b:'11101011',f:FLAGS_NONE,op:['disp8']},
+            'ec':{m:'IN',a:'IN AL, DX',d:'Input byte from port DX',c:'data',bs:'1110110w',b:'11101100',f:FLAGS_NONE},
+            'ed':{m:'IN',a:'IN AX, DX',d:'Input word from port DX',c:'data',bs:'1110110w',b:'11101101',f:FLAGS_NONE},
+            'ee':{m:'OUT',a:'OUT DX, AL',d:'Output byte to port DX',c:'data',bs:'1110111w',b:'11101110',f:FLAGS_NONE},
+            'ef':{m:'OUT',a:'OUT DX, AX',d:'Output word to port DX',c:'data',bs:'1110111w',b:'11101111',f:FLAGS_NONE},
+            'f0':{m:'LOCK',a:'LOCK',d:'Lock Bus Prefix',c:'processor',bs:'11110000',b:'11110000',f:FLAGS_NONE},
+            'f2':{m:'REPNE',a:'REPNE/REPNZ',d:'Repeat Not Equal Prefix',c:'string',bs:'11110010',b:'11110010',f:FLAGS_STRING},
+            'f3':{m:'REP',a:'REP/REPE/REPZ',d:'Repeat Prefix',c:'string',bs:'11110011',b:'11110011',f:FLAGS_STRING},
+            'f4':{m:'HLT',a:'HLT',d:'Halt Processor',c:'processor',bs:'11110100',b:'11110100',f:FLAGS_NONE},
+            'f5':{m:'CMC',a:'CMC',d:'Complement Carry Flag',c:'processor',bs:'11110101',b:'11110101',f:{...FLAGS_NONE,CF:'M'}},
+            'f6':{m:'GRP3',a:'GRP3 r/m8',d:'Unary Group 3 (8-bit)',c:'logic',bs:'11110110',b:'11110110',f:ALL_FLAGS,modrm:true,g:'grp3'},
+            'f7':{m:'GRP3',a:'GRP3 r/m16',d:'Unary Group 3 (16-bit)',c:'logic',bs:'11110111',b:'11110111',f:ALL_FLAGS,modrm:true,g:'grp3'},
+            'f8':{m:'CLC',a:'CLC',d:'Clear Carry Flag',c:'processor',bs:'11111000',b:'11111000',f:{...FLAGS_NONE,CF:'C'}},
+            'f9':{m:'STC',a:'STC',d:'Set Carry Flag',c:'processor',bs:'11111001',b:'11111001',f:{...FLAGS_NONE,CF:'S'}},
+            'fa':{m:'CLI',a:'CLI',d:'Clear Interrupt Flag',c:'processor',bs:'11111010',b:'11111010',f:{...FLAGS_NONE,IF:'C'}},
+            'fb':{m:'STI',a:'STI',d:'Set Interrupt Flag',c:'processor',bs:'11111011',b:'11111011',f:{...FLAGS_NONE,IF:'S'}},
+            'fc':{m:'CLD',a:'CLD',d:'Clear Direction Flag',c:'processor',bs:'11111100',b:'11111100',f:{...FLAGS_NONE,DF:'C'}},
+            'fd':{m:'STD',a:'STD',d:'Set Direction Flag',c:'processor',bs:'11111101',b:'11111101',f:{...FLAGS_NONE,DF:'S'}},
+            'fe':{m:'GRP4',a:'GRP4 r/m8',d:'INC/DEC Group 4',c:'arithmetic',bs:'11111110',b:'11111110',f:{...ALL_FLAGS,CF:'-'},modrm:true,g:'grp4'},
+            'ff':{m:'GRP5',a:'GRP5 r/m16',d:'Misc Group 5',c:'control',bs:'11111111',b:'11111111',f:ALL_FLAGS,modrm:true,g:'grp5'}
+        };
+
+        const groupData = { grp1:['ADD','OR','ADC','SBB','AND','SUB','XOR','CMP'], grp1a: ['POP'], grp2:['ROL','ROR','RCL','RCR','SHL/SAL','SHR',null,'SAR'], grp3:['TEST','','NOT','NEG','MUL','IMUL','DIV','IDIV'], grp4:['INC','DEC'], grp5:['INC','DEC','CALL near','CALL far','JMP near','JMP far','PUSH'], grp_mov_imm: ['MOV'] };
+        const categories = { all: 'All', data: 'Data Transfer', arithmetic: 'Arithmetic', logic: 'Logic', string: 'String', control: 'Control Flow', processor: 'Processor Control' };
+        const categoryColors = {data:{bg:'bg-sky-500',text:'text-sky-400'},arithmetic:{bg:'bg-emerald-500',text:'text-emerald-400'},logic:{bg:'bg-indigo-500',text:'text-indigo-400'},string:{bg:'bg-purple-500',text:'text-purple-400'},control:{bg:'bg-rose-500',text:'text-rose-400'},processor:{bg:'bg-yellow-500',text:'text-yellow-400'},other:{bg:'bg-slate-500',text:'text-slate-400'}};
+        const modrm_regs = {w0: ['AL','CL','DL','BL','AH','CH','DH','BH'], w1: ['AX','CX','DX','BX','SP','BP','SI','DI'], sreg: ['ES', 'CS', 'SS', 'DS']};
+        const modrm_ea = ['[BX+SI]','[BX+DI]','[BP+SI]','[BP+DI]','[SI]','[DI]','[BP]','[BX]'];
+
+        // --- APP LOGIC ---
+        document.addEventListener('DOMContentLoaded', () => {
+            const grid = document.getElementById('opcode-grid');
+            const detailsPanel = document.getElementById('details-panel');
+            const builderPanel = document.getElementById('builder-panel');
+            const searchBox = document.getElementById('search-box');
+            const categoryFiltersContainer = document.getElementById('category-filters');
+            const tabs = { details: document.getElementById('tab-details'), builder: document.getElementById('tab-builder') };
+            const panels = { details: detailsPanel, builder: builderPanel };
+            let selectedCell = null;
+            let currentHex = null;
+
+            const welcomeMessage = `<div class="flex flex-col items-center justify-center h-full text-center"><h2 class="text-2xl font-bold text-white mb-4">8086 Workbench</h2><p class="text-slate-400">An exhaustive, interactive toolkit for the Intel 8086 instruction set.</p><ul class="list-none mt-4 text-slate-400 space-y-2 text-left"><li><span class="font-semibold text-amber-400 w-20 inline-block">Explore:</span> Click any opcode in the grid.</li><li><span class="font-semibold text-amber-400 w-20 inline-block">Filter:</span> Use the categories on the left.</li><li><span class="font-semibold text-amber-400 w-20 inline-block">Build:</span> Go to the Builder tab to construct machine code.</li><li><span class="font-semibold text-amber-400 w-20 inline-block">Decode:</span> Paste hex code into the Builder to decode it.</li></ul></div>`;
+
+            function switchTab(tabName) {
+                Object.values(tabs).forEach(t => t.classList.remove('active'));
+                Object.values(panels).forEach(p => p.classList.add('hidden'));
+                tabs[tabName].classList.add('active');
+                panels[tabName].classList.remove('hidden');
+                if (tabName === 'builder') updateBuilderUI();
+            }
+
+            function getBinaryStructureTable(hex, data) {
+                const binary = data.b;
+                let breakdownHtml = '<table class="w-full text-center font-mono mt-2"><thead><tr class="text-slate-400 text-xs">';
+                const bits = binary.split('');
+                let labels = [];
+                let values = [];
+                let meanings = [];
+
+                if (data.bs === '1011wreg') { // MOV imm to reg
+                    labels = ['Opcode', 'w', 'reg'];
+                    values = [binary.substring(0,4), binary.substring(4,5), binary.substring(5)];
+                    meanings = [`MOV imm`, `w=${binary[4]} (${binary[4]==='1'?'word':'byte'})`, `reg=${modrm_regs[binary[4]==='1'?'w1':'w0'][parseInt(binary.substring(5),2)]}`];
+                } else if (data.bs && (data.bs.includes('dw') || data.bs.includes('sw'))) {
+                     labels = ['Opcode', 'd', 'w'];
+                     values = [binary.substring(0,6), binary.substring(6,7), binary.substring(7)];
+                     meanings = [data.m, `d=${binary[6]}`, `w=${binary[7]}`];
+                } else if (data.bs === '01010reg' || data.bs === '01011reg' || data.bs === '10010reg' || data.bs === '01000reg' || data.bs === '01001reg') {
+                     labels = ['Opcode', 'reg'];
+                     values = [binary.substring(0,5), binary.substring(5)];
+                     meanings = [data.m, `reg=${modrm_regs.w1[parseInt(binary.substring(5),2)]}`];
+                } else {
+                     return `<p class="mt-2"><span class="w-28 inline-block text-slate-400">Binary Str:</span> ${data.bs || 'N/A'}</p>`;
+                }
+
+                labels.forEach(l => breakdownHtml += `<th>${l}</th>`);
+                breakdownHtml += '</tr></thead><tbody><tr class="text-amber-400">';
+                values.forEach(v => breakdownHtml += `<td>${v}</td>`);
+                breakdownHtml += '</tr><tr class="text-xs text-sky-400">';
+                meanings.forEach(m => breakdownHtml += `<td>${m}</td>`);
+                breakdownHtml += '</tr></tbody></table>';
+                return breakdownHtml;
+            }
+
+            function showDetails(hex) {
+                currentHex = hex;
+                const data = opcodeData[hex];
+                if (!data) { detailsPanel.innerHTML = `<p class="text-center p-4 text-rose-400">Unused or invalid opcode: ${hex.toUpperCase()}h</p>`; return; }
+
+                const catColors = categoryColors[data.c] || categoryColors.other;
+                let groupHtml = '';
+                if (data.g && groupData[data.g]) {
+                    groupHtml = `<div class="mt-4 pt-4 border-t border-slate-700"><h4 class="font-semibold text-slate-300">ModR/M 'reg' Field Operations:</h4><ul class="mt-2 space-y-1 text-sm font-mono grid grid-cols-1 md:grid-cols-2 gap-1">`;
+                    groupData[data.g].forEach((op, index) => { if (op) groupHtml += `<li class="p-2 bg-slate-900 rounded-md"><span class="font-bold text-amber-400">/${index}</span> &rarr; ${op}</li>`; });
+                    groupHtml += `</ul></div>`;
+                }
+
+                let flagsHtml = '<div class="mt-4 pt-4 border-t border-slate-700"><h4 class="font-semibold text-slate-300 mb-2">Flags Affected</h4><div>';
+                Object.keys(data.f).forEach(flag => {
+                    const status = data.f[flag];
+                    const flagClass = {'M':'flag-m','S':'flag-s','C':'flag-c','U':'flag-u','T':'flag-t','-':'flag-na'}[status] || 'flag-na';
+                    flagsHtml += `<span class="flag ${flagClass}" title="${{M:'Modified',S:'Set',C:'Cleared',U:'Undefined',T:'Tested','-':'Not Affected'}[status]}">${flag}</span>`;
+                });
+                flagsHtml += '</div></div>';
+
+                detailsPanel.innerHTML = `
+                    <div class="flex items-start gap-4 mb-4">
+                        <span class="text-4xl font-mono font-bold ${catColors.text}">${hex.toUpperCase()}h</span>
+                        <div><h2 class="text-2xl font-bold text-white">${data.m}</h2><p class="text-slate-400">${data.d}</p></div>
+                    </div>
+                    <div class="p-4 bg-slate-900 rounded-lg">
+                        <div class="font-mono text-sm space-y-2">
+                             <p><span class="w-28 inline-block text-slate-400">Assembly:</span> ${data.a}</p>
+                             <p><span class="w-28 inline-block text-slate-400">Binary:</span> ${data.b}</p>
+                             <p><span class="w-28 inline-block text-slate-400">Category:</span> <span class="font-sans font-semibold ${catColors.text} capitalize">${data.c}</span></p>
+                             <p><span class="w-28 inline-block text-slate-400">ModR/M Byte:</span> ${data.modrm ? '<span class="text-green-400">Required</span>' : 'No'}</p>
+                        </div>
+                        <div class="mt-2 pt-2 border-t border-slate-700/50"> ${getBinaryStructureTable(hex, data)}</div>
+                        ${flagsHtml}
+                        ${groupHtml}
+                    </div>`;
+                
+                tabs.builder.disabled = false;
+                tabs.builder.classList.remove('opacity-50', 'cursor-not-allowed');
+                if (tabs.builder.classList.contains('active')) updateBuilderUI();
+            }
+
+            function updateBuilderUI() {
+                const data = currentHex ? opcodeData[currentHex] : null;
+                builderPanel.innerHTML = ''; 
+                
+                const decoderContainer = document.createElement('div');
+                decoderContainer.innerHTML = `<h3 class="text-lg font-semibold text-white mb-2">Instruction Decoder</h3>
+                    <input type="text" id="decoder-input" class="w-full p-2 font-mono bg-slate-700 border border-slate-600 rounded-md" placeholder="Paste hex code (e.g., 8B C3)">
+                    <div id="decoder-output" class="mt-4 text-left p-4 bg-slate-900 rounded-lg min-h-[100px]"></div>`;
+                builderPanel.appendChild(decoderContainer);
+
+                if (data) {
+                    const builderContainer = document.createElement('div');
+                    builderContainer.className = 'mt-6 border-t border-slate-700 pt-6';
+                    let builderContent = `<h3 class="text-lg font-semibold text-white mb-4">Instruction Builder: ${currentHex.toUpperCase()}h (${data.m})</h3><div class="space-y-4">`;
+                    
+                    if (data.modrm) {
+                         builderContent += `<div><label class="block text-sm font-medium text-slate-400">Mode (mod)</label><select id="builder-mod" class="w-full p-2 bg-slate-700 border border-slate-600 rounded-md mt-1"><option value="3">11: Register</option><option value="0">00: Memory (no disp)</option><option value="1">01: Memory (8-bit disp)</option><option value="2">10: Memory (16-bit disp)</option></select></div>`;
+                         builderContent += `<div><label class="block text-sm font-medium text-slate-400">Register (reg)</label><select id="builder-reg" class="w-full p-2 bg-slate-700 border border-slate-600 rounded-md mt-1"></select></div>`;
+                         builderContent += `<div><label class="block text-sm font-medium text-slate-400">Register/Memory (r/m)</label><select id="builder-rm" class="w-full p-2 bg-slate-700 border border-slate-600 rounded-md mt-1"></select></div>`;
+                         builderContent += `<div><label class="block text-sm font-medium text-slate-400">Displacement</label><input type="text" id="builder-disp" class="w-full p-2 font-mono bg-slate-700 border border-slate-600 rounded-md mt-1" placeholder="Hex value" disabled></div>`;
+                    }
+                    if (data.op) {
+                        data.op.forEach(operand => {
+                             builderContent += `<div><label class="block text-sm font-medium text-slate-400 capitalize">${operand.replace(/\d+/g, '')}</label><input type="text" id="builder-${operand}" class="w-full p-2 font-mono bg-slate-700 border border-slate-600 rounded-md mt-1" placeholder="Hex value"></div>`;
+                        });
+                    }
+                    builderContent += `</div><div class="mt-6 p-4 bg-slate-900 rounded-lg"><h4 class="font-semibold">Result</h4><div id="builder-output" class="mt-2 font-mono text-amber-400 text-lg break-all"></div><div id="builder-asm" class="mt-1 font-mono text-sky-400"></div></div>`;
+                    builderContainer.innerHTML = builderContent;
+                    builderPanel.prepend(builderContainer);
+                    attachBuilderListeners();
+                } else {
+                     const placeholder = document.createElement('p');
+                     placeholder.className = 'text-xs text-slate-500 mt-4 text-center';
+                     placeholder.textContent = 'Select an opcode from the grid to use the Builder.';
+                     builderPanel.prepend(placeholder);
+                }
+                setupDecoder();
+            }
+
+            function attachBuilderListeners() {
+                document.querySelectorAll('#builder-panel select, #builder-panel input').forEach(el => {
+                    el.addEventListener('change', updateBuilderResult);
+                    el.addEventListener('keyup', updateBuilderResult);
+                });
+                const modSelect = document.getElementById('builder-mod');
+                if (modSelect) {
+                    modSelect.addEventListener('change', () => {
+                        const dispInput = document.getElementById('builder-disp');
+                        const mod = parseInt(modSelect.value);
+                        dispInput.disabled = !(mod === 1 || mod === 2 || (mod === 0 && document.getElementById('builder-rm').value === '6'));
+                    });
+                    modSelect.dispatchEvent(new Event('change'));
+                }
+                updateBuilderResult();
+            }
+            
+            function updateBuilderResult() {
+                const data = opcodeData[currentHex];
+                if (!data) return;
+
+                const isWord = data.b[7] === '1';
+                const hasS = data.bs && data.bs.includes('s') && data.b[6] === '1';
+
+                let finalHex = [currentHex.toUpperCase()];
+                let asm = '';
+
+                if (data.modrm) {
+                    const modSelect = document.getElementById('builder-mod');
+                    const regSelect = document.getElementById('builder-reg');
+                    const rmSelect = document.getElementById('builder-rm');
+                    const dispInput = document.getElementById('builder-disp');
+
+                    const regList = (data.a.includes('sreg')) ? modrm_regs.sreg : (isWord ? modrm_regs.w1 : modrm_regs.w0);
+                    if(regSelect.options.length !== regList.length) {
+                       regSelect.innerHTML = regList.map((r, i) => `<option value="${i}">${r}</option>`).join('');
+                    }
+                    const isRegMode = modSelect.value === '3';
+                    const rmList = isRegMode ? (isWord ? modrm_regs.w1 : modrm_regs.w0) : modrm_ea;
+                     if(rmSelect.options.length !== rmList.length) {
+                       rmSelect.innerHTML = rmList.map((r, i) => `<option value="${i}">${r}</option>`).join('');
+                    }
+
+                    const mod = parseInt(modSelect.value);
+                    const reg = parseInt(regSelect.value);
+                    const rm = parseInt(rmSelect.value);
+                    const modrmByte = (mod << 6) | (reg << 3) | rm;
+                    finalHex.push(modrmByte.toString(16).padStart(2, '0').toUpperCase());
+
+                    const regName = regList[reg] || `sreg${reg}`;
+                    let rmName = rmList[rm];
+                    
+                    let dispVal = '';
+                    if (!dispInput.disabled) {
+                        dispVal = dispInput.value.replace(/[^0-9A-Fa-f]/g, '');
+                        const len = mod === 1 ? 2 : 4;
+                        dispVal = dispVal.padStart(len, '0').substring(0, len);
+                        finalHex.push(dispVal.toUpperCase());
+                        rmName = rmName.replace(']', `+${dispVal}h]`);
+                    }
+
+                    asm = data.m;
+                    if (data.g && groupData[data.g]) {
+                        asm = groupData[data.g][reg] || data.m;
+                    }
+                    const isDir1 = data.b[6] === '1'; // d=1
+                    const operand1 = isDir1 ? regName : rmName;
+                    const operand2 = isDir1 ? rmName : regName;
+                    asm = `${asm} ${operand1}, ${operand2}`;
+                }
+
+                if (data.op) {
+                    let firstOp = true;
+                    data.op.forEach(op => {
+                        const input = document.getElementById(`builder-${op}`);
+                        let val = input.value.replace(/[^0-9A-Fa-f]/g, '');
+                        const len = op.includes('16') ? 4 : (op.includes('8') ? 2 : op === 'addr16' ? 4 : 0);
+                        if(len > 0) val = val.padStart(len, '0').substring(0, len);
+                        finalHex.push(val.toUpperCase());
+                        if (data.modrm || !firstOp) asm += `,`;
+                        asm += ` ${val}h`;
+                        firstOp = false;
+                    });
+                }
+                
+                if(!asm.startsWith(data.m)) asm = data.a;
+
+                document.getElementById('builder-output').textContent = finalHex.join(' ');
+                document.getElementById('builder-asm').textContent = asm;
+            }
+
+            function setupDecoder() {
+                const decoderInput = document.getElementById('decoder-input');
+                const decoderOutput = document.getElementById('decoder-output');
+                decoderInput.addEventListener('keyup', () => {
+                    const input = decoderInput.value.replace(/\s/g, '').toLowerCase();
+                    if (!/^[0-9a-f]*$/.test(input) || input.length < 2) {
+                        decoderOutput.innerHTML = '<p class="text-slate-500">Enter valid hex characters.</p>'; return;
+                    }
+                    const opcode = input.substring(0, 2);
+                    const opData = opcodeData[opcode];
+                    if (!opData) { decoderOutput.innerHTML = `<p>Opcode <span class="font-semibold text-rose-400">${opcode.toUpperCase()}h</span> not found.</p>`; return; }
+
+                    let outputHtml = `<p>Opcode: <span class="font-semibold text-amber-400">${opcode.toUpperCase()}h</span> &rarr; <span class="text-sky-400">${opData.m}</span> (${opData.a})</p>`;
+                    let pos = 2;
+
+                    if (opData.modrm && input.length >= 4) {
+                         const modrmHex = input.substring(pos, pos+2);
+                         pos += 2;
+                         const modrmByte = parseInt(modrmHex, 16);
+                         const mod = (modrmByte >> 6) & 0b11;
+                         const reg = (modrmByte >> 3) & 0b111;
+                         const rm = modrmByte & 0b111;
+                         const isWord = opData.b[7] === '1';
+                         const regList = opData.a.includes('sreg') ? modrm_regs.sreg : (isWord ? modrm_regs.w1 : modrm_regs.w0);
+                         const rmList = mod === 3 ? (isWord ? modrm_regs.w1 : modrm_regs.w0) : modrm_ea;
+                         outputHtml += `<p class="mt-2">ModR/M: <span class="font-semibold text-amber-400">${modrmHex.toUpperCase()}h</span></p><ul class="text-sm list-disc list-inside pl-4 text-slate-400"><li>mod: <span class="text-white">${mod.toString(2).padStart(2,'0')}</span> (${mod === 3 ? 'Register' : 'Memory'})</li><li>reg: <span class="text-white">${reg.toString(2).padStart(3,'0')}</span> &rarr; ${regList[reg] || 'N/A'}</li><li>r/m: <span class="text-white">${rm.toString(2).padStart(3,'0')}</span> &rarr; ${rmList[rm] || 'N/A'}</li></ul>`;
+                    }
+                     if (opData.op) {
+                         opData.op.forEach(op => {
+                             const len = op.includes('16') ? 4 : (op.includes('8') ? 2 : op === 'addr16' ? 4 : 0);
+                             const val = input.substring(pos, pos + len);
+                             pos += len;
+                             if(val) outputHtml += `<p class="mt-2">${op}: <span class="font-semibold text-amber-400">${val.toUpperCase()}h</span></p>`;
+                         });
+                     }
+                    decoderOutput.innerHTML = outputHtml;
+                });
+            }
+
+            function init() {
+                Object.keys(tabs).forEach(key => tabs[key].addEventListener('click', () => switchTab(key)));
+                Object.keys(categories).forEach(cat => {
+                    const color = categoryColors[cat] ? categoryColors[cat].bg : 'bg-slate-500';
+                    const button = document.createElement('button');
+                    button.className = 'w-full text-left p-2 rounded-md hover:bg-slate-700 flex items-center';
+                    button.dataset.category = cat;
+                    button.innerHTML = `<span class="w-3 h-3 rounded-full ${color} mr-3"></span> ${categories[cat]}`;
+                    button.onclick = () => filterByCategory(cat);
+                    categoryFiltersContainer.appendChild(button);
+                });
+
+                for (let i = 0; i < 256; i++) {
+                    const hex = i.toString(16).padStart(2, '0');
+                    const cell = document.createElement('button');
+                    cell.className = 'grid-cell p-1 text-center font-mono text-xs md:text-sm rounded aspect-square flex items-center justify-center';
+                    const data = opcodeData[hex];
+                    const catColors = (data && categoryColors[data.c]) ? categoryColors[data.c] : categoryColors.other;
+                    cell.style.backgroundColor = data ? `rgba(${hexToRgb(catColors.bg)}, 0.15)` : `rgba(${hexToRgb(categoryColors.other.bg)}, 0.1)`;
+                    cell.style.color = data ? `rgb(${hexToRgb(catColors.text)})`: `rgb(${hexToRgb(categoryColors.other.text)})`;
+                    cell.onmouseover = () => { if (!cell.classList.contains('inactive')) cell.style.backgroundColor = `rgba(${hexToRgb(catColors.bg)}, 0.4)`; };
+                    cell.onmouseout = () => { if (!cell.classList.contains('selected') && data) cell.style.backgroundColor = `rgba(${hexToRgb(catColors.bg)}, 0.15)`; };
+                    cell.textContent = hex.toUpperCase();
+                    cell.dataset.hex = hex;
+                    if (data) { cell.dataset.mnemonic = data.m; cell.dataset.category = data.c; cell.title = data.d; }
+
+                    cell.addEventListener('click', () => {
+                        if (selectedCell) {
+                            selectedCell.classList.remove('selected');
+                            const prevData = opcodeData[selectedCell.dataset.hex];
+                            const prevCatColors = (prevData && categoryColors[prevData.c]) ? categoryColors[prevData.c] : categoryColors.other;
+                            if (prevData) selectedCell.style.backgroundColor = `rgba(${hexToRgb(prevCatColors.bg)}, 0.15)`;
+                        }
+                        cell.classList.add('selected');
+                        cell.style.backgroundColor = '#334155';
+                        selectedCell = cell;
+                        showDetails(hex);
+                        switchTab('details');
+                    });
+                    grid.appendChild(cell);
+                }
+
+                searchBox.addEventListener('keyup', () => {
+                    const searchTerm = searchBox.value.toUpperCase();
+                    grid.querySelectorAll('.grid-cell').forEach(cell => {
+                        const mnemonic = (opcodeData[cell.dataset.hex]?.m || '').toUpperCase();
+                        if (searchTerm && mnemonic.includes(searchTerm)) { cell.classList.add('highlight'); } 
+                        else { cell.classList.remove('highlight'); }
+                    });
+                });
+                
+                detailsPanel.innerHTML = welcomeMessage;
+                switchTab('details');
+                updateBuilderUI();
+            }
+
+            function filterByCategory(category) {
+                grid.querySelectorAll('.grid-cell').forEach(cell => {
+                    if (category === 'all' || (opcodeData[cell.dataset.hex] && opcodeData[cell.dataset.hex].c === category)) { cell.classList.remove('inactive'); } 
+                    else { cell.classList.add('inactive'); }
+                });
+            }
+            
+            function hexToRgb(hexClass) {
+                const colors = { 'bg-sky-500':'59,130,246', 'text-sky-400':'96,165,250', 'bg-emerald-500':'16,185,129', 'text-emerald-400':'52,211,153', 'bg-indigo-500':'99,102,241', 'text-indigo-400':'129,140,248', 'bg-purple-500':'168,85,247', 'text-purple-400':'192,132,252', 'bg-rose-500':'244,63,94', 'text-rose-400':'251,113,133', 'bg-yellow-500':'234,179,8', 'text-yellow-400':'250,204,21', 'bg-slate-500':'100,116,139', 'text-slate-400':'148,163,184' };
+                return colors[hexClass] || '100,116,139';
+            }
+
+            init();
+        });
+    </script>
+</body>
+</html>
+
